@@ -13,60 +13,85 @@ jobs:
 
     steps:
 
-      # 1. Repository থেকে ZIP আনবে
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. ZIP নিজে খুঁজে Extract করবে
-      - name: Unzip the project
+      - name: Unzip project
         shell: bash
         run: |
           set -e
 
-          ZIP_FILE=$(find . -maxdepth 1 -type f \
-            \( -iname "*.zip" \) | head -n 1)
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found at repository root."
+            echo "ERROR: No ZIP file found."
             ls -la
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
+          echo "ZIP found: $ZIP_FILE"
 
-          unzip -o "$ZIP_FILE" -d .
+          unzip -o "$ZIP_FILE" -d extracted
 
-          echo "Extracted files:"
-          ls -la
+          echo "Extraction completed."
+          find extracted -maxdepth 4 -type f | sort | head -300
 
-      # 3. নিশ্চিত করবে Android project বের হয়েছে
-      - name: Verify Android project
+      - name: Detect Android project automatically
+        id: project
         shell: bash
         run: |
           set -e
 
-          if [ ! -d "MBC-ERP-Android" ]; then
-            echo "ERROR: MBC-ERP-Android folder was not found after extraction."
-            echo "Available directories:"
-            find . -maxdepth 2 -type d | sort
+          echo "Searching for Gradle settings file..."
+
+          SETTINGS=$(find extracted \
+            -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            | head -n 1)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle or settings.gradle.kts was not found."
+            echo "Extracted structure:"
+            find extracted -maxdepth 5 -type f | sort
             exit 1
           fi
 
-          echo "Android project found:"
-          ls -la MBC-ERP-Android
+          PROJECT_ROOT=$(dirname "$SETTINGS")
 
-      # 4. Java 17
+          echo "Android project detected at:"
+          echo "$PROJECT_ROOT"
+
+          echo "project_root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Android project
+        working-directory: ${{ steps.project.outputs.project_root }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Project root:"
+          pwd
+
+          echo "Project files:"
+          ls -la
+
+          if [ ! -f "settings.gradle" ] && \
+             [ ! -f "settings.gradle.kts" ]; then
+            echo "ERROR: Gradle settings file missing."
+            exit 1
+          fi
+
+          echo "ANDROID PROJECT VERIFIED"
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 5. Android SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      # 6. Android SDK packages
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -75,73 +100,63 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      # 7. Gradle 8.7
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.7"
           validate-wrappers: false
 
-      # 8. Generate Gradle wrapper
-      - name: Generate Gradle wrapper
-        working-directory: MBC-ERP-Android
+      - name: Prepare Gradle wrapper
+        working-directory: ${{ steps.project.outputs.project_root }}
         shell: bash
         run: |
           set -e
 
           if [ ! -f "./gradlew" ]; then
-            echo "gradlew not found."
-            echo "Generating Gradle 8.7 wrapper..."
+            echo "gradlew missing."
+            echo "Generating Gradle wrapper..."
 
             gradle wrapper --gradle-version 8.7
-          else
-            echo "gradlew already exists."
           fi
 
           chmod +x ./gradlew
 
           ./gradlew --version
 
-      # 9. Run tests
       - name: Run unit tests
-        working-directory: MBC-ERP-Android
+        working-directory: ${{ steps.project.outputs.project_root }}
         shell: bash
         run: |
           ./gradlew testDebugUnitTest --stacktrace
 
-      # 10. Build APK
       - name: Build debug APK
-        working-directory: MBC-ERP-Android
+        working-directory: ${{ steps.project.outputs.project_root }}
         shell: bash
         run: |
           ./gradlew assembleDebug --stacktrace
 
-      # 11. Find APK
-      - name: Find generated APK
+      - name: Find APK
         shell: bash
         run: |
-          echo "Generated APK files:"
-
-          find MBC-ERP-Android \
+          echo "APK files:"
+          find extracted \
             -type f \
-            -path "*/build/outputs/apk/*/*.apk" \
+            -path "*/build/outputs/apk/**/*.apk" \
             -print
 
-      # 12. Upload APK
-      - name: Upload debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: mbc-erp-debug-apk
           path: |
-            MBC-ERP-Android/**/build/outputs/apk/**/*.apk
+            extracted/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
 
-      # 13. Upload test report
-      - name: Upload unit test report
+      - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-report
           path: |
-            MBC-ERP-Android/**/build/reports/tests/testDebugUnitTest/**
+            extracted/**/build/reports/tests/testDebugUnitTest/**
           if-no-files-found: warn
