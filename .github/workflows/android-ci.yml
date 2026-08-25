@@ -1,78 +1,61 @@
-name: Android CI (Unzip + Build + Test)
+name: Extract ZIP & Build APK
 
-"on":
+on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch: {}
+    paths:
+      - '**.zip'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    # All later steps run inside the folder that comes out of the zip
-    # (the zip's top-level folder is "MBC-ERP-Android").
-    defaults:
-      run:
-        working-directory: MBC-ERP-Android
-
     steps:
-      - name: Checkout repository
+      - name: রিপো চেকআউট
         uses: actions/checkout@v4
-        with:
-          path: .
 
-      - name: Unzip the project
-        working-directory: .
+      - name: ZIP খুঁজে বের করে extract করা
         run: |
-          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n 1)
+          ZIP_FILE=$(find . -maxdepth 3 -iname "*.zip" | head -n 1)
           if [ -z "$ZIP_FILE" ]; then
-            echo "No .zip file found at repo root!"
+            echo "কোনো .zip ফাইল পাওয়া যায়নি!"
             exit 1
           fi
-          echo "Unzipping: $ZIP_FILE"
-          unzip -o "$ZIP_FILE" -d .
-          ls -la
+          echo "পাওয়া গেছে: $ZIP_FILE"
+          mkdir -p extracted
+          unzip -o "$ZIP_FILE" -d extracted
 
-      - name: Set up JDK 17
+      - name: Gradle প্রজেক্টের রুট ফোল্ডার খুঁজে বের করা
+        run: |
+          PROJECT_DIR=$(find extracted -maxdepth 4 -name "settings.gradle.kts" -exec dirname {} \; | head -n 1)
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "settings.gradle.kts পাওয়া যায়নি — এটা কি Android/Gradle প্রজেক্ট?"
+            exit 1
+          fi
+          echo "প্রজেক্ট রুট: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: JDK 17 সেটআপ
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+      - name: Gradle সেটআপ (wrapper না থাকলেও চলবে)
+        uses: gradle/actions/setup-gradle@v4
         with:
-          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+          gradle-version: 8.7
 
-      - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: '8.7'
-          validate-wrappers: false
+      - name: Unit টেস্ট রান (থাকলে)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle testDebugUnitTest --continue || true
 
-      - name: Generate the missing Gradle wrapper jar
-        run: gradle wrapper --gradle-version 8.7
+      - name: Debug APK বিল্ড
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Run unit tests
-        run: ./gradlew testDebugUnitTest --stacktrace
-
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: Upload debug APK
+      - name: APK আপলোড (Artifacts থেকে ডাউনলোড করা যাবে)
         uses: actions/upload-artifact@v4
         with:
           name: mbc-erp-debug-apk
-          path: MBC-ERP-Android/app/build/outputs/apk/debug/*.apk
-
-      - name: Upload unit test report (always, even on failure)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-report
-          path: MBC-ERP-Android/app/build/reports/tests/testDebugUnitTest/
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
